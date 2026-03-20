@@ -1,0 +1,66 @@
+# SignVoice — default hyperparameters
+
+data:
+  video_dir: "data/raw/"
+  processed_dir: "data/processed/"
+  stats_path: "data/keypoint_stats.npz"
+  max_samples: null          # null = use all
+  train_split: 0.8
+  val_split: 0.1
+  test_split: 0.1
+
+keypoints:
+  n_features: 183            # 63+63+45+12
+  pose_indices: [11,12,13,14,15,16,23,24,25,26,27,28,0,1,2]
+  face_emotion_indices: [33,263,61,291,199,1]
+  mediapipe_complexity: 1    # 0=fast, 1=balanced, 2=accurate
+
+mel:
+  sr: 22050
+  n_fft: 1024
+  hop_length: 256
+  win_length: 1024
+  n_mels: 80
+  fmin: 0
+  fmax: 8000
+  silence_val: -11.5         # log(1e-5)
+
+model:
+  input_dim: 183
+  d_model: 256
+  encoder_layers: 4
+  encoder_heads: 4
+  encoder_ff_dim: 1024
+  encoder_dropout: 0.1
+  decoder_layers: 4
+  decoder_heads: 4
+  decoder_ff_dim: 1024
+  decoder_dropout: 0.1
+  n_mels: 80
+  postnet_channels: 512
+  postnet_kernel: 5
+  postnet_layers: 5
+  use_emotion: true
+  emotion_dim: 32
+
+training:
+  epochs: 100
+  batch_size: 8
+  learning_rate: 1.0e-3
+  warmup_steps: 4000
+  weight_decay: 1.0e-6
+  grad_clip: 1.0
+  log_interval: 10
+  save_interval: 5
+  checkpoint_dir: "checkpoints/"
+  device: "cuda"             # "cpu" for Colab CPU fallback
+
+loss:
+  l1_weight: 1.0
+  mse_weight: 1.0
+  stop_weight: 1.0
+  postnet_weight: 1.0
+
+vocoder:
+  model_path: "checkpoints/hifigan_pretrained/"
+  config_path: "checkpoints/hifigan_pretrained/config.json"
