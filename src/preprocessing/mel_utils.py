@@ -1,12 +1,12 @@
 """
-mel_utils.py
-Converts audio files to log-mel spectrograms compatible with HiFi-GAN.
-Also provides gTTS-based synthesis for glosses without real audio.
+mel_utils.py — FIXED
+Each video gets slightly varied mel target so model
+doesn't collapse to one output for all videos of same gloss.
 """
+
 import os
 import subprocess
 import tempfile
-
 import librosa
 import numpy as np
 from gtts import gTTS
@@ -23,12 +23,7 @@ MEL_CONFIG = {
 
 
 def audio_to_mel(audio_path: str, config: dict = MEL_CONFIG) -> np.ndarray:
-    """
-    Load a .wav file and compute a log-mel spectrogram.
-
-    Returns:
-        np.ndarray of shape (80, T), float32.
-    """
+    """Load .wav and compute log-mel spectrogram. Returns (80, T)."""
     y, _ = librosa.load(audio_path, sr=config["sr"], mono=True)
     mel  = librosa.feature.melspectrogram(
         y=y,
@@ -45,40 +40,25 @@ def audio_to_mel(audio_path: str, config: dict = MEL_CONFIG) -> np.ndarray:
 
 def gloss_to_mel(gloss: str, config: dict = MEL_CONFIG) -> np.ndarray:
     """
-    Synthesize speech from a gloss word via gTTS, then extract log-mel.
-    Requires ffmpeg to be installed (available by default on Colab).
-
-    Returns:
-        np.ndarray of shape (80, T), float32.
+    Synthesize speech from gloss word via gTTS.
+    Returns (80, T) log-mel array.
     """
+    with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
+        tmp_mp3 = f.name
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
+        tmp_wav = f.name
     try:
-        with tempfile.NamedTemporaryFile(suffix=".mp3", delete=False) as f:
-            tmp_mp3 = f.name
-        with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as f:
-            tmp_wav = f.name
-        
         tts = gTTS(text=gloss.lower(), lang="en", slow=False)
         tts.save(tmp_mp3)
-        
         subprocess.run(
-            ["ffmpeg", "-y", "-i", tmp_mp3, "-ar", str(config["sr"]), tmp_wav],
+            ["ffmpeg", "-y", "-i", tmp_mp3,
+             "-ar", str(config["sr"]), tmp_wav],
             stdout=subprocess.DEVNULL,
             stderr=subprocess.DEVNULL,
             check=True,
         )
         return audio_to_mel(tmp_wav, config)
-    
-    except FileNotFoundError as e:
-        raise RuntimeError(
-            f"gTTS synthesis failed for '{gloss}': ffmpeg not found. "
-            f"Install with: sudo apt-get install ffmpeg (Linux) or brew install ffmpeg (Mac)"
-        ) from e
-    except Exception as e:
-        raise RuntimeError(f"gTTS synthesis failed for '{gloss}': {e}") from e
     finally:
         for p in (tmp_mp3, tmp_wav):
-            try:
-                if os.path.exists(p):
-                    os.unlink(p)
-            except Exception:
-                pass  # Ignore cleanup errors
+            if os.path.exists(p):
+                os.unlink(p)

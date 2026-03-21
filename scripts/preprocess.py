@@ -1,6 +1,8 @@
 """
 scripts/preprocess.py
-Fixed version — matches WLASL video filenames directly without zero-padding.
+Fixed for Kaggle WLASL-processed dataset where video files
+are renamed sequentially (00335.mp4) but JSON has original IDs.
+Each video gets its own unique mel target with small variation.
 """
 
 import json
@@ -8,6 +10,7 @@ import os
 import sys
 import numpy as np
 from pathlib import Path
+from collections import defaultdict, Counter
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), ".."))
 
@@ -19,64 +22,67 @@ from src.preprocessing.mel_utils import gloss_to_mel
 VIDEO_DIR     = Path("data/raw/wlasl-processed/videos")
 JSON_PATH     = Path("data/raw/wlasl-processed/WLASL_v0.3.json")
 OUTPUT_DIR    = Path("data/processed")
-MAX_GLOSSES   = 1000    # keep plenty of glosses; should allow 380+ if files exist
-MAX_PER_GLOSS = 999     # very high limit to include all available files per gloss (380+ total)
+MAX_GLOSSES   = 20
+MAX_PER_GLOSS = 20
 # ─────────────────────────────────────────────────
 
 
-def build_video_index():
+def build_index_by_order() -> list[dict]:
     """
-    Match video files to glosses.
-    Tries both raw video_id and zero-padded (zfill 5) formats.
+    Match video files to glosses by sequential position.
+    Kaggle WLASL renames videos sequentially but JSON has original IDs.
     """
-    # Build lookup from JSON: both formats → gloss
-    id_to_gloss = {}
     with open(JSON_PATH) as f:
         data = json.load(f)
 
-    for entry in data[:MAX_GLOSSES]:
+    all_videos = sorted(VIDEO_DIR.glob("*.mp4"))
+    print(f"  Total videos on disk : {len(all_videos)}")
+
+    json_instances = []
+    for entry in data:
         gloss = entry["gloss"]
         for inst in entry["instances"]:
-            vid_id = str(inst["video_id"])
-            # store both raw and zero-padded versions
-            id_to_gloss[vid_id]            = gloss   # e.g. "69241"
-            id_to_gloss[vid_id.zfill(5)]   = gloss   # e.g. "69241" (same here)
-            id_to_gloss[vid_id.zfill(6)]   = gloss   # fallback
+            json_instances.append({
+                "gloss"      : gloss,
+                "original_id": str(inst["video_id"]),
+                "split"      : inst.get("split", "train"),
+            })
 
-    # Scan disk and match
-    samples      = []
-    unmatched    = []
-    gloss_counts = {}
+    print(f"  Total JSON instances : {len(json_instances)}")
+    print(f"  Matching by position : {min(len(all_videos), len(json_instances))} pairs")
 
-    for mp4 in sorted(VIDEO_DIR.glob("*.mp4")):
-        stem  = mp4.stem                     # e.g. "69241"
-        gloss = id_to_gloss.get(stem)        # direct match
-
-        # If no direct match, try stripping leading zeros
-        if gloss is None:
-            gloss = id_to_gloss.get(stem.lstrip("0") or "0")
-
-        if gloss is None:
-            # Fallback: assign unknown gloss and still include the sample
-            gloss = "unknown"
-            unmatched.append(mp4.name)
-
-        count = gloss_counts.get(gloss, 0)
-        if count >= MAX_PER_GLOSS:
-            continue
-
-        samples.append({
-            "video_path" : str(mp4),
-            "gloss"      : gloss,
-            "video_id"   : stem,
+    matched = []
+    for video, inst in zip(all_videos, json_instances):
+        matched.append({
+            "video_path" : str(video),
+            "video_id"   : video.stem,
+            "gloss"      : inst["gloss"],
+            "original_id": inst["original_id"],
+            "split"      : inst["split"],
         })
-        gloss_counts[gloss] = count + 1
 
-    print(f"  Matched   : {len(samples)} videos")
-    print(f"  Unmatched : {len(unmatched)} (belong to glosses outside top {MAX_GLOSSES})")
-    print(f"  Glosses   : {sorted(gloss_counts.keys())}")
-    print(f"  Per gloss : {gloss_counts}")
-    return samples
+    gloss_counts = Counter(m["gloss"] for m in matched)
+    top_glosses  = set(g for g, _ in gloss_counts.most_common(MAX_GLOSSES))
+
+    print(f"\n  Top {MAX_GLOSSES} glosses:")
+    for g, c in gloss_counts.most_common(MAX_GLOSSES):
+        print(f"    {g:20s} : {c} videos")
+
+    filtered   = []
+    gloss_seen = defaultdict(int)
+
+    for m in matched:
+        if m["gloss"] not in top_glosses:
+            continue
+        if gloss_seen[m["gloss"]] >= MAX_PER_GLOSS:
+            continue
+        filtered.append(m)
+        gloss_seen[m["gloss"]] += 1
+
+    print(f"\n  After filtering : {len(filtered)} samples")
+    print(f"  Glosses used    : {sorted(set(m['gloss'] for m in filtered))}")
+
+    return filtered
 
 
 def main():
@@ -89,20 +95,21 @@ def main():
         sys.exit(1)
 
     total_mp4 = len(list(VIDEO_DIR.glob("*.mp4")))
-    print(f"\n  Total .mp4 on disk : {total_mp4}")
+    print(f"\n  Videos on disk : {total_mp4}")
+
+    if total_mp4 == 0:
+        print("ERROR: No .mp4 files found.")
+        sys.exit(1)
 
     (OUTPUT_DIR / "keypoints").mkdir(parents=True, exist_ok=True)
     (OUTPUT_DIR / "mels").mkdir(parents=True, exist_ok=True)
 
     # ── Step 1: Build index ──────────────────────
-    print(f"\n[1/4] Building video index...")
-    samples = build_video_index()
+    print(f"\n[1/4] Building video-gloss index...")
+    samples = build_index_by_order()
 
     if len(samples) == 0:
-        print("\nERROR: Still 0 matches. Run the debug command below:")
-        print('python -c "from pathlib import Path; '
-              'print([p.stem for p in '
-              'sorted(Path(\'data/raw/wlasl-processed/videos\').glob(\'*.mp4\'))[:5]])"')
+        print("\nERROR: No samples found.")
         sys.exit(1)
 
     # ── Step 2: Extract keypoints ────────────────
@@ -124,12 +131,12 @@ def main():
             s["kp_frames"]     = int(kp.shape[0])
             manifest.append(s)
 
-            if i % 20 == 0:
-                print(f"  [{i:>4}/{len(samples)}] {s['gloss']:15s} | frames={kp.shape[0]}")
+            if i % 25 == 0:
+                print(f"  [{i:>4}/{len(samples)}] {s['gloss']:20s} | frames={kp.shape[0]}")
 
         except Exception as e:
             failed += 1
-            if failed <= 3:
+            if failed <= 5:
                 print(f"  SKIP {s['video_id']} ({s['gloss']}): {e}")
 
     print(f"\n  Extracted : {len(manifest)} | Failed : {failed}")
@@ -143,11 +150,17 @@ def main():
     for s in manifest:
         gloss = s["gloss"]
         try:
+            # Synthesize once per gloss, cache it
             if gloss not in mel_cache:
                 print(f"  Synthesizing : '{gloss}'")
                 mel_cache[gloss] = gloss_to_mel(gloss)
 
-            mel      = mel_cache[gloss]
+            # Give each video its own unique mel with small noise
+            # This prevents model from collapsing to one output per gloss
+            base_mel = mel_cache[gloss]
+            noise    = np.random.normal(0, 0.05, base_mel.shape).astype(np.float32)
+            mel      = base_mel + noise
+
             mel_path = OUTPUT_DIR / "mels" / f"{s['video_id']}.npy"
             np.save(mel_path, mel)
             s["mel_file"]   = str(mel_path)
@@ -158,10 +171,10 @@ def main():
             mel_failed += 1
             print(f"  SKIP mel '{gloss}': {e}")
 
-    print(f"  Mel done : {len(final)} | Failed : {mel_failed}")
+    print(f"  Done : {len(final)} | Failed : {mel_failed}")
 
     # ── Step 4: Fit normalizer ───────────────────
-    print(f"\n[4/4] Fitting normalizer...")
+    print(f"\n[4/4] Fitting normalizer on {len(all_kp)} sequences...")
     normalizer = KeypointNormalizer(str(OUTPUT_DIR / "keypoint_stats.npz"))
     normalizer.fit(all_kp)
 
@@ -171,22 +184,23 @@ def main():
     val   = final[int(0.8 * n):int(0.9 * n)]
     test  = final[int(0.9 * n):]
 
-    for split, data in [("train", train), ("val", val), ("test", test)]:
+    for split, sdata in [("train", train), ("val", val), ("test", test)]:
         path = OUTPUT_DIR / f"{split}_manifest.json"
         with open(path, "w") as f:
-            json.dump(data, f, indent=2)
-        print(f"  {split:>5} : {len(data):>4} samples")
+            json.dump(sdata, f, indent=2)
+        print(f"  {split:>5} : {len(sdata):>4} samples")
 
     # ── Summary ──────────────────────────────────
     glosses_used = sorted(set(s["gloss"] for s in final))
     print("\n" + "=" * 55)
     print("  Preprocessing Complete!")
     print("=" * 55)
-    print(f"  Total samples : {n}")
-    print(f"  Train         : {len(train)}")
-    print(f"  Val           : {len(val)}")
-    print(f"  Test          : {len(test)}")
-    print(f"  Glosses       : {glosses_used}")
+    print(f"  Total samples  : {n}")
+    print(f"  Train          : {len(train)}")
+    print(f"  Val            : {len(val)}")
+    print(f"  Test           : {len(test)}")
+    print(f"  Glosses        : {len(glosses_used)}")
+    print(f"  Signs learned  : {glosses_used}")
     print(f"\n  Next:")
     print(f"  python scripts/train.py --config configs/lightweight.yaml")
     print("=" * 55)

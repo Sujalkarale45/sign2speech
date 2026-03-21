@@ -1,7 +1,6 @@
 """
-postnet.py
-5-layer 1D CNN PostNet that refines the decoder's raw mel output.
-Mirrors Tacotron 2's postnet design.
+postnet.py — UPDATED
+5-layer CNN PostNet. Fixed layer construction bug.
 """
 import torch
 import torch.nn as nn
@@ -9,8 +8,8 @@ import torch.nn as nn
 
 class PostNet(nn.Module):
     """
-    Residual CNN that predicts a mel residual added to the decoder output.
-    Input/output: (B, n_mels, T).
+    Residual CNN that predicts a mel residual added to decoder output.
+    Input/output shape: (B, n_mels, T).
     """
 
     def __init__(
@@ -26,23 +25,22 @@ class PostNet(nn.Module):
         layers  = []
 
         for i in range(n_layers):
-            in_ch  = n_mels    if i == 0           else channels
-            out_ch = n_mels    if i == n_layers - 1 else channels
-            layers += [
-                nn.Conv1d(in_ch, out_ch, kernel, padding=padding),
-                nn.BatchNorm1d(out_ch),
-                nn.Tanh() if i < n_layers - 1 else nn.Identity(),
-                nn.Dropout(dropout),
-            ]
+            in_ch  = n_mels    if i == 0            else channels
+            out_ch = n_mels    if i == n_layers - 1  else channels
+            layers.append(nn.Conv1d(in_ch, out_ch, kernel, padding=padding))
+            layers.append(nn.BatchNorm1d(out_ch))
+            if i < n_layers - 1:
+                layers.append(nn.Tanh())
+            layers.append(nn.Dropout(dropout))
 
         self.net = nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (B, n_mels, T) — raw decoder mel output.
+            x: (B, n_mels, T)
 
         Returns:
-            (B, n_mels, T) — mel + postnet residual.
+            (B, n_mels, T) — x + postnet residual
         """
         return x + self.net(x)

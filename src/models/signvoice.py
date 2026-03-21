@@ -1,6 +1,5 @@
 """
-signvoice.py
-Full SignVoice model: wires Encoder → (optional Emotion) → Decoder → PostNet.
+signvoice.py — UPDATED
 """
 import torch
 import torch.nn as nn
@@ -11,16 +10,9 @@ from .emotion import EmotionEmbedding
 
 
 class SignVoiceModel(nn.Module):
-    """
-    End-to-end Sign Language → Mel Spectrogram model.
-    No text at any stage.
-    """
+    """End-to-end Sign Language → Mel Spectrogram model."""
 
     def __init__(self, config: dict):
-        """
-        Args:
-            config: dict loaded from configs/default.yaml  (model section).
-        """
         super().__init__()
         m = config["model"]
 
@@ -50,29 +42,46 @@ class SignVoiceModel(nn.Module):
         if self.use_emotion:
             self.emotion = EmotionEmbedding(emotion_dim=m["emotion_dim"])
 
-    def make_padding_mask(self, lengths: torch.Tensor, max_len: int) -> torch.Tensor:
-        """Returns (B, max_len) bool mask where True = pad position."""
-        return torch.arange(max_len, device=lengths.device).unsqueeze(0) >= lengths.unsqueeze(1)
+    def make_padding_mask(
+        self,
+        lengths: torch.Tensor,
+        max_len: int
+    ) -> torch.Tensor:
+        """Returns (B, max_len) bool mask. True = pad position."""
+        return (
+            torch.arange(max_len, device=lengths.device)
+            .unsqueeze(0) >= lengths.unsqueeze(1)
+        )
 
     def forward(
         self,
-        keypoints: torch.Tensor,        # (B, T, 183)
-        key_lengths: torch.Tensor,      # (B,)
-        mel_input: torch.Tensor,        # (B, T_mel, 80)  teacher-forced
-        face_kp: torch.Tensor | None = None,  # (B, T, 12) optional
+        keypoints: torch.Tensor,       # (B, T, 183)
+        key_lengths: torch.Tensor,     # (B,)
+        mel_input: torch.Tensor,       # (B, T_mel, 80)
+        face_kp: torch.Tensor | None = None,
     ) -> tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
         """
         Returns:
-            mel_pre:   (B, T_mel, 80)  — pre-postnet mel
-            mel_post:  (B, T_mel, 80)  — post-postnet mel
-            stop_pred: (B, T_mel, 1)   — stop token logits
+            mel_pre:   (B, T_mel, 80)
+            mel_post:  (B, T_mel, 80)
+            stop_pred: (B, T_mel, 1)
         """
-        src_mask   = self.make_padding_mask(key_lengths, keypoints.size(1))
-        enc_out    = self.encoder(keypoints, src_key_padding_mask=src_mask)
+        src_mask = self.make_padding_mask(key_lengths, keypoints.size(1))
 
-        mel_pre, stop_pred = self.decoder(enc_out, mel_input, memory_key_padding_mask=src_mask)
+        enc_out = self.encoder(
+            keypoints,
+            src_key_padding_mask=src_mask
+        )
 
-        # PostNet expects (B, n_mels, T) → transpose in/out
-        mel_post = self.postnet(mel_pre.transpose(1, 2)).transpose(1, 2)
+        mel_pre, stop_pred = self.decoder(
+            encoder_out=enc_out,
+            mel_input=mel_input,
+            memory_key_padding_mask=src_mask,
+        )
+
+        # PostNet: (B, T, 80) → transpose → (B, 80, T) → postnet → back
+        mel_post = self.postnet(
+            mel_pre.transpose(1, 2)
+        ).transpose(1, 2)
 
         return mel_pre, mel_post, stop_pred
